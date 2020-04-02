@@ -1,0 +1,94 @@
+# Docker
+# Build and push an image to Azure Container Registry
+# https://docs.microsoft.com/azure/devops/pipelines/languages/docker
+
+trigger:
+- master
+
+resources:
+- repo: self
+
+variables:
+  # Container registry service connection established during pipeline creation
+  dockerRegistryServiceConnection: '65c25119-b0ba-4cff-baa9-9941a2b7c0d2'
+  imageRepository: 'hello-world'
+  containerRegistry: 'appregistryterraform.azurecr.io'
+  dockerfilePath: '$(Build.SourcesDirectory)/spring-boot-hello-world/Dockerfile'
+  tag: '$(Build.BuildId)'
+
+  
+  # Agent VM image name
+  vmImageName: 'ubuntu-latest'
+
+stages:
+- stage: Build
+  displayName: Build and push stage
+  jobs:  
+  - job: Build
+    displayName: Build
+    variables:
+    - group: dev
+    pool:
+      vmImage: $(vmImageName)
+    steps:
+
+    - task: Bash@3
+      displayName: Terraform Version
+      inputs:
+        targetType: 'inline'
+        script: 'terraform version'
+
+    - task: Bash@3
+      displayName: Terraform Initialisation
+      inputs:
+        targetType: 'inline'
+        script: 'cd terraform-resources && terraform init'
+        
+    - task: Bash@3
+      displayName: Terraform Plan
+      inputs:
+        targetType: 'inline'
+        script: 'cd terraform-resources && terraform plan -var="client_secret=$(client_secret)"'        
+        
+    - task: Bash@3
+      displayName: Terraform Apply
+      inputs:
+        targetType: 'inline'
+        script: 'cd terraform-resources && terraform apply -var="client_secret=$(client_secret)" -auto-approve'                
+
+    - task: Maven@3
+      displayName: Build code and generate packge
+      inputs:
+        mavenPomFile: '$(Build.SourcesDirectory)/spring-boot-hello-world/pom.xml'
+        mavenOptions: '-Xmx3072m'
+        javaHomeOption: 'JDKVersion'
+        jdkVersionOption: '1.8'
+        jdkArchitectureOption: 'x64'
+        goals: 'package'          
+    
+    - task: Docker@2
+      displayName: Build and push an image to container registry
+      inputs:
+        command: buildAndPush
+        repository: $(imageRepository)
+        dockerfile: $(dockerfilePath)
+        containerRegistry: $(dockerRegistryServiceConnection)
+        tags: |
+          $(tag)
+
+    - task: HelmDeploy@0
+      displayName: Helm install or upgrade release
+      inputs:
+        connectionType: 'Azure Resource Manager'
+        azureSubscription: 'Free Trial(c9068100-c73d-493a-a5b3-f5e29eafd633)'
+        azureResourceGroup: 'dev'
+        kubernetesCluster: 'dev-aks-cluster'
+        namespace: 'dev'
+        command: 'upgrade'
+        chartType: 'FilePath'
+        chartPath: '$(Build.SourcesDirectory)/kubernetes-resources/helm-charts/generic-chart/'
+        releaseName: 'hello-world-app'
+        overrideValues: 'container_properties.image.tag=$(Build.BuildId)'
+        valueFile: '$(Build.SourcesDirectory)/kubernetes-resources/dev/ms/values.yaml'
+        waitForExecution: false
+        arguments: '--debug'
